@@ -1,83 +1,78 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="CSV Data Validator Pro", layout="wide")
+st.title("CSV Data Validator Pro")
 
-st.title("📊 CSV Data Validator Pro")
+# ---------- RULE LOADER ----------
+def load_rules(excel_file):
+    df = pd.read_excel(excel_file)
 
+    # normalize column names
+    df.columns = df.columns.str.strip().str.lower()
+
+    # allow rule or type
+    if "rule" not in df.columns and "type" in df.columns:
+        df = df.rename(columns={"type": "rule"})
+
+    required = {"column", "rule", "value"}
+
+    if not required.issubset(set(df.columns)):
+        st.error(f"Rules sheet must contain columns: {required}")
+        st.stop()
+
+    return df
+
+
+# ---------- VALIDATOR ----------
+def validate(df, rules_df):
+    errors = []
+
+    for _, r in rules_df.iterrows():
+        col = r["column"]
+        rule = str(r["rule"]).lower()
+        val = r["value"]
+
+        if col not in df.columns:
+            errors.append(f"Missing column: {col}")
+            continue
+
+        if rule == "min":
+            bad = df[df[col] < float(val)]
+            errors.append((col, "min", bad))
+
+        elif rule == "max":
+            bad = df[df[col] > float(val)]
+            errors.append((col, "max", bad))
+
+        elif rule == "in":
+            allowed = [x.strip() for x in str(val).split(",")]
+            bad = df[~df[col].astype(str).isin(allowed)]
+            errors.append((col, "in", bad))
+
+    return errors
+
+
+# ---------- UI ----------
 rules_file = st.file_uploader("Upload Rules Excel", type=["xlsx"])
 data_file = st.file_uploader("Upload Data CSV", type=["csv"])
 
-def normalize_cols(df):
-    df.columns = (
-        df.columns
-        .str.strip()
-        .str.lower()
-    )
-    return df
-
 if rules_file and data_file:
 
-    try:
-        # ---------- LOAD RULES ----------
-        rules_df = pd.read_excel(rules_file)
+    rules_df = load_rules(rules_file)
+    data_df = pd.read_csv(data_file)
 
-        rules_df = normalize_cols(rules_df)
+    st.subheader("Rules Preview")
+    st.dataframe(rules_df)
 
-        st.subheader("🔍 Rules Preview")
-        st.dataframe(rules_df)
+    errs = validate(data_df, rules_df)
 
-        required = {"column","value","rule"}
+    st.subheader("Validation Results")
 
-        if not required.issubset(set(rules_df.columns)):
-            st.error(f"Rules sheet must contain columns: {required}")
-            st.stop()
-
-        # ---------- LOAD DATA ----------
-        data_df = pd.read_csv(data_file)
-        data_df = normalize_cols(data_df)
-
-        st.subheader("📄 Data Preview")
-        st.dataframe(data_df.head())
-
-        errors = []
-
-        # ---------- APPLY RULES ----------
-        for _, r in rules_df.iterrows():
-            col = r["column"]
-            rule = str(r["rule"]).lower()
-            val = r["value"]
-
-            if col not in data_df.columns:
-                errors.append(f"Missing column in data: {col}")
-                continue
-
-            if rule == "min":
-                bad = data_df[data_df[col] < float(val)]
-                if not bad.empty:
-                    errors.append(f"{col} below min {val}")
-
-            elif rule == "max":
-                bad = data_df[data_df[col] > float(val)]
-                if not bad.empty:
-                    errors.append(f"{col} above max {val}")
-
-            elif rule == "allowed":
-                allowed_vals = [x.strip().lower() for x in str(val).split(",")]
-                bad = data_df[~data_df[col].astype(str).str.lower().isin(allowed_vals)]
-                if not bad.empty:
-                    errors.append(f"{col} has invalid values")
-
-        # ---------- RESULTS ----------
-        if errors:
-            st.error("❌ Validation Errors Found")
-            for e in errors:
-                st.write("•", e)
-        else:
-            st.success("✅ All rules passed!")
-
-    except Exception as e:
-        st.exception(e)
-
-else:
-    st.info("Upload Rules Excel and Data CSV to start validation.")
+    for e in errs:
+        if isinstance(e, tuple):
+            col, rule, bad = e
+            if len(bad) > 0:
+                st.error(f"{col} failed {rule} rule — {len(bad)} rows")
+                st.dataframe(bad.head())
+            else:
+                st.success(f"{col} passed {rule}")
