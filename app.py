@@ -1,82 +1,83 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
 
-st.title("CSV Data Validator")
+st.set_page_config(page_title="CSV Data Validator Pro", layout="wide")
 
-# ---------- RULES LOADER ----------
-def load_rules(rule_file):
-    xls = pd.ExcelFile(rule_file)
-    rules_df = pd.read_excel(xls, "rules")
-    return rules_df
+st.title("📊 CSV Data Validator Pro")
 
-# ---------- VALIDATOR ----------
-def validate(df, rules_df):
-    errors = []
-
-    for _, rule in rules_df.iterrows():
-        col = rule["column"]
-        rtype = rule["type"]
-
-        if col not in df.columns:
-            continue
-
-        if rtype == "min":
-            minv = rule["value"]
-            bad = df[df[col] < minv]
-            for i in bad.index:
-                errors.append({"row": i, "column": col, "error": "below min"})
-
-        elif rtype == "max":
-            maxv = rule["value"]
-            bad = df[df[col] > maxv]
-            for i in bad.index:
-                errors.append({"row": i, "column": col, "error": "above max"})
-
-        elif rtype == "in":
-            allowed = str(rule["value"]).split("|")
-            bad = df[~df[col].astype(str).isin(allowed)]
-            for i in bad.index:
-                errors.append({"row": i, "column": col, "error": "invalid"})
-
-    return pd.DataFrame(errors)
-
-# ---------- UI ----------
-rule_file = st.file_uploader("Upload Rules Excel", type=["xlsx"])
+rules_file = st.file_uploader("Upload Rules Excel", type=["xlsx"])
 data_file = st.file_uploader("Upload Data CSV", type=["csv"])
 
-if rule_file and data_file:
-
-    rules_df = load_rules(rule_file)
-    df = pd.read_csv(data_file)
-
-    st.success("Files loaded")
-
-    err_df = validate(df, rules_df)
-
-    st.subheader("Validation Errors")
-    st.dataframe(err_df)
-
-    # ---------- CLEAN DATA ----------
-    bad_rows = err_df["row"].unique() if not err_df.empty else []
-    clean_df = df.drop(index=bad_rows)
-
-    # ---------- DOWNLOAD CSV ----------
-    st.download_button(
-        "Download Errors CSV",
-        err_df.to_csv(index=False),
-        file_name="errors.csv"
+def normalize_cols(df):
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.lower()
     )
+    return df
 
-    # ---------- EXCEL REPORT ----------
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Original")
-        clean_df.to_excel(writer, index=False, sheet_name="Clean")
-        err_df.to_excel(writer, index=False, sheet_name="Errors")
+if rules_file and data_file:
 
-    st.download_button(
-        "Download Full Excel Report",
-        output.getvalue(),
-        file_name="report.xlsx"
-    )
+    try:
+        # ---------- LOAD RULES ----------
+        rules_df = pd.read_excel(rules_file)
+
+        rules_df = normalize_cols(rules_df)
+
+        st.subheader("🔍 Rules Preview")
+        st.dataframe(rules_df)
+
+        required = {"column","value","rule"}
+
+        if not required.issubset(set(rules_df.columns)):
+            st.error(f"Rules sheet must contain columns: {required}")
+            st.stop()
+
+        # ---------- LOAD DATA ----------
+        data_df = pd.read_csv(data_file)
+        data_df = normalize_cols(data_df)
+
+        st.subheader("📄 Data Preview")
+        st.dataframe(data_df.head())
+
+        errors = []
+
+        # ---------- APPLY RULES ----------
+        for _, r in rules_df.iterrows():
+            col = r["column"]
+            rule = str(r["rule"]).lower()
+            val = r["value"]
+
+            if col not in data_df.columns:
+                errors.append(f"Missing column in data: {col}")
+                continue
+
+            if rule == "min":
+                bad = data_df[data_df[col] < float(val)]
+                if not bad.empty:
+                    errors.append(f"{col} below min {val}")
+
+            elif rule == "max":
+                bad = data_df[data_df[col] > float(val)]
+                if not bad.empty:
+                    errors.append(f"{col} above max {val}")
+
+            elif rule == "allowed":
+                allowed_vals = [x.strip().lower() for x in str(val).split(",")]
+                bad = data_df[~data_df[col].astype(str).str.lower().isin(allowed_vals)]
+                if not bad.empty:
+                    errors.append(f"{col} has invalid values")
+
+        # ---------- RESULTS ----------
+        if errors:
+            st.error("❌ Validation Errors Found")
+            for e in errors:
+                st.write("•", e)
+        else:
+            st.success("✅ All rules passed!")
+
+    except Exception as e:
+        st.exception(e)
+
+else:
+    st.info("Upload Rules Excel and Data CSV to start validation.")
