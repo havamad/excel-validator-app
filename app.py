@@ -2,22 +2,26 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-st.set_page_config(page_title="CSV Validator Pro", layout="wide")
+st.set_page_config(page_title="CSV Validator Pro V2", layout="wide")
 
-st.title("📊 CSV Validator Pro v2")
+st.title("📊 CSV Validator Pro V2")
 
 # -----------------------------
-# Helpers
+# RULE LOADER (AUTO FIX HEADERS)
 # -----------------------------
-
-REQUIRED_RULE_COLS = {"column", "rule", "value"}
+REQUIRED_RULE_COLS = ["column", "rule", "value"]
 
 def load_rules(file):
     df = pd.read_excel(file)
+
+    # normalize headers
     df.columns = df.columns.str.strip().str.lower()
 
-    needed = ["column","rule","value"]
-    for c in needed:
+    # allow "type" instead of "rule"
+    if "type" in df.columns and "rule" not in df.columns:
+        df = df.rename(columns={"type": "rule"})
+
+    for c in REQUIRED_RULE_COLS:
         if c not in df.columns:
             st.error(f"Missing column in rules sheet: {c}")
             st.write("Found columns:", list(df.columns))
@@ -25,62 +29,31 @@ def load_rules(file):
 
     return df
 
+
+# -----------------------------
+# RULE CHECKER
+# -----------------------------
 def check_rule(val, rule, rule_value):
     try:
         if rule == "min":
             return float(val) >= float(rule_value)
+
         if rule == "max":
             return float(val) <= float(rule_value)
+
         if rule == "in":
             allowed = [x.strip() for x in str(rule_value).split(",")]
             return str(val) in allowed
+
     except:
         return False
+
     return True
 
-def validate(df, rules_df):
-    results = []
-    error_cols = []
-    error_msgs = []
-
-    for _, row in df.iterrows():
-        row_errors = []
-        row_cols = []
-
-        for _, r in rules_df.iterrows():
-            col = r["column"]
-            rule = str(r["rule"]).lower()
-            rule_val = r["value"]
-
-            if col not in df.columns:
-                continue
-
-            ok = check_rule(row[col], rule, rule_val)
-            if not ok:
-                row_errors.append(f"{col}:{rule}")
-                row_cols.append(col)
-
-        results.append(len(row_errors) == 0)
-        error_cols.append(",".join(row_cols))
-        error_msgs.append(",".join(row_errors))
-
-    df_out = df.copy()
-    df_out["status"] = ["PASS" if x else "FAIL" for x in results]
-    df_out["error_columns"] = error_cols
-    df_out["error_rules"] = error_msgs
-
-    return df_out
-
-def to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="report")
-    return output.getvalue()
 
 # -----------------------------
-# Upload UI
+# FILE UPLOAD
 # -----------------------------
-
 rules_file = st.file_uploader("Upload Rules Excel", type=["xlsx"])
 data_file = st.file_uploader("Upload Data CSV", type=["csv"])
 
@@ -92,77 +65,74 @@ if rules_file and data_file:
     st.subheader("🔍 Rules Preview")
     st.dataframe(rules_df)
 
-    # -------------------------
-    # Validation
-    # -------------------------
+    failed_rows = []
+    column_scores = {}
 
-    validated = validate(data_df, rules_df)
+    # -----------------------------
+    # VALIDATION LOOP
+    # -----------------------------
+    for _, r in rules_df.iterrows():
+        col = r["column"]
+        rule = str(r["rule"]).lower()
+        value = r["value"]
 
-    passed = (validated["status"] == "PASS").sum()
-    failed = (validated["status"] == "FAIL").sum()
-    total = len(validated)
+        if col not in data_df.columns:
+            st.warning(f"Column not found in data: {col}")
+            continue
 
-    # -------------------------
-    # Summary
-    # -------------------------
+        results = data_df[col].apply(lambda x: check_rule(x, rule, value))
 
-    st.subheader("✅ Validation Summary")
+        pass_count = results.sum()
+        total = len(results)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Rows", total)
-    c2.metric("Passed", passed)
-    c3.metric("Failed", failed)
-    c4.metric("Pass %", round(passed/total*100, 1))
+        column_scores[col] = f"{pass_count}/{total}"
 
-    # -------------------------
-    # Column Wise Score
-    # -------------------------
+        bad = data_df[~results]
+        if not bad.empty:
+            bad["__failed_column"] = col
+            bad["__failed_rule"] = rule
+            failed_rows.append(bad)
 
-    st.subheader("📈 Column Wise Score")
+    # -----------------------------
+    # SUMMARY
+    # -----------------------------
+    st.subheader("✅ Column Wise Score")
+    st.write(column_scores)
 
-    col_scores = []
-    for col in rules_df["column"].unique():
-        if col in validated.columns:
-            fails = validated[validated["error_columns"].str.contains(col, na=False)]
-            score = 100 - (len(fails)/total*100)
-            col_scores.append((col, round(score,1)))
+    if failed_rows:
+        failed_df = pd.concat(failed_rows)
 
-    score_df = pd.DataFrame(col_scores, columns=["column","pass_%"])
-    st.dataframe(score_df)
-
-    # -------------------------
-    # Failed Rows Download
-    # -------------------------
-
-    failed_df = validated[validated["status"] == "FAIL"]
-
-    if len(failed_df) > 0:
         st.subheader("❌ Failed Rows")
         st.dataframe(failed_df)
 
+        # download failed rows
+        csv_bytes = failed_df.to_csv(index=False).encode()
+
         st.download_button(
-            "⬇️ Download Failed Rows Excel",
-            to_excel(failed_df),
-            file_name="failed_rows.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "⬇️ Download Failed Rows CSV",
+            csv_bytes,
+            file_name="failed_rows.csv"
         )
 
-    # -------------------------
-    # Full Report Download
-    # -------------------------
+        st.error(f"Total Failed Rows: {len(failed_df)}")
 
-    st.subheader("📦 Full Validation Report")
+    else:
+        st.success("🎉 All rows passed validation!")
+
+    # -----------------------------
+    # EXCEL REPORT EXPORT
+    # -----------------------------
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        data_df.to_excel(writer, sheet_name="data", index=False)
+        rules_df.to_excel(writer, sheet_name="rules", index=False)
+
+        if failed_rows:
+            failed_df.to_excel(writer, sheet_name="failed", index=False)
 
     st.download_button(
-        "⬇️ Download Full Excel Report",
-        to_excel(validated),
-        file_name="validation_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "📥 Download Full Excel Report",
+        output.getvalue(),
+        file_name="validation_report.xlsx"
     )
-
-    st.subheader("📋 Full Result Preview")
-    st.dataframe(validated)
-
-else:
-    st.info("Upload rules + CSV to start validation.")
-
