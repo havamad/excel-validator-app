@@ -15,9 +15,14 @@ REQUIRED_RULE_COLS = {"column", "rule", "value"}
 def load_rules(file):
     df = pd.read_excel(file)
     df.columns = df.columns.str.strip().str.lower()
-    if not REQUIRED_RULE_COLS.issubset(df.columns):
-        st.error(f"Rules sheet must contain columns: {REQUIRED_RULE_COLS}")
-        st.stop()
+
+    needed = ["column","rule","value"]
+    for c in needed:
+        if c not in df.columns:
+            st.error(f"Missing column in rules sheet: {c}")
+            st.write("Found columns:", list(df.columns))
+            st.stop()
+
     return df
 
 def check_rule(val, rule, rule_value):
@@ -160,3 +165,4 @@ if rules_file and data_file:
 
 else:
     st.info("Upload rules + CSV to start validation.")
+
